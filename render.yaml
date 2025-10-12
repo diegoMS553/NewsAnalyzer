@@ -1,0 +1,45 @@
+# Configuración para Cron Job - Evita la suspensión del servicio
+services:
+  - type: cron
+    name: financial-news-analyzer-cron
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Ejecutar cada 4 horas para evitar suspensión y mantener análisis regular
+    schedule: "0 */4 * * *"
+    startCommand: python main.py run-once
+    envVars:
+      - key: RENDER
+        value: true
+      - key: ENABLE_WEB_SCRAPING
+        value: false
+      - key: ENABLE_TITLE_TRANSLATION
+        value: true
+      - key: TRANSLATION_TARGET_LANGUAGE
+        value: es
+      - key: ANALYSIS_INTERVAL_HOURS
+        value: 4
+      - key: MAX_NEWS_PER_ANALYSIS
+        value: 8
+      - key: SENTIMENT_THRESHOLD
+        value: 0.1
+      # IMPORTANTE: Agregar tus variables de entorno reales aquí:
+      # - key: ALPHA_VANTAGE_API_KEY
+      #   value: tu_api_key_aqui
+      # - key: TELEGRAM_BOT_TOKEN
+      #   value: tu_bot_token_aqui
+      # - key: TELEGRAM_CHAT_ID
+      #   value: tu_chat_id_aqui
+      # - key: NEWS_API_KEY
+      #   value: tu_news_api_key_aqui (opcional)
+
+  # Opcional: Mantener un servicio web ligero para monitoreo
+  - type: web
+    name: financial-news-monitor
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python monitor.py
+    envVars:
+      - key: RENDER
+        value: true
