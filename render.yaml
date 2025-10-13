@@ -4,7 +4,7 @@ services:
     name: financial-news-analyzer-cron
     env: python
     plan: free
-    python_version: 3.13.3
+    python_version: 3.12.3  # Cambia esta línea a una versión compatible
     buildCommand: pip install -r requirements.txt
     # Ejecutar cada 4 horas para evitar suspensión y mantener análisis regular
     schedule: "0 */1 * * *"
