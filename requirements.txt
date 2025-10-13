@@ -12,13 +12,15 @@ nltk==3.8.1
 deep-translator==1.11.4
 
 # Para el servicio web de monitoreo
-flask==3.0.0
+flask==2.3.3
 gunicorn==21.2.0
 
 # Dependencias adicionales para parsing y feeds
 feedparser==6.0.10
-lxml==4.9.3
 charset-normalizer==3.3.2
 
 # Para manejo de fechas y tiempo
 pytz==2023.3
+
+# LXML - instalar desde wheel pre-compilado
+lxml==4.9.3 --only-binary=lxml
