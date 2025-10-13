@@ -23,4 +23,4 @@ charset-normalizer==3.3.2
 pytz==2023.3
 
 # LXML - instalar desde wheel pre-compilado
-lxml==4.9.3 --only-binary=lxml
+lxml==6.0.2 
