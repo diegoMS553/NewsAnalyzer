@@ -6,6 +6,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from config import Config
 from deep_translator import GoogleTranslator
+import html
 
 class TelegramNotifier:
     """Cliente para enviar notificaciones a Telegram"""
@@ -24,6 +25,18 @@ class TelegramNotifier:
         if not self.chat_id:
             raise ValueError("Chat ID es requerido")
         return True
+    
+    def escape_html(self, text):
+        """Escape caracteres HTML para Telegram"""
+        if not text:
+            return ""
+        return html.escape(str(text))
+    
+    def truncate_text(self, text, max_length=100):
+        """Trunca texto y añade ... si es muy largo"""
+        if len(text) <= max_length:
+            return text
+        return text[:max_length-3] + "..."
     
     def translate_title(self, title, target_language=None):
         """Traduce el título de una noticia al español"""
@@ -56,63 +69,78 @@ class TelegramNotifier:
         # Si hay error, devolver el título original
         return title
     
-    async def send_message(self, message, parse_mode=ParseMode.MARKDOWN):
-        """Envía un mensaje a Telegram"""
+    async def send_message(self, message, parse_mode=ParseMode.HTML):
+        """Envía un mensaje a Telegram con manejo de errores mejorado"""
         if not self.bot:
             self.logger.error("Bot no inicializado")
             return False
         
         try:
+            # Limitar mensaje a 4096 caracteres
+            if len(message) > 4096:
+                message = message[:4090] + "..."
+            
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode=parse_mode
+                parse_mode=parse_mode,
+                disable_web_page_preview=True
             )
             self.logger.info("Mensaje enviado exitosamente")
             return True
             
         except TelegramError as e:
             self.logger.error(f"Error enviando mensaje a Telegram: {e}")
-            return False
+            # Intentar sin formato si falla con HTML
+            try:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message[:4000],
+                    parse_mode=None,
+                    disable_web_page_preview=True
+                )
+                return True
+            except Exception as e2:
+                self.logger.error(f"Error también sin formato: {e2}")
+                return False
         except Exception as e:
             self.logger.error(f"Error inesperado: {e}")
             return False
     
     def format_sentiment_analysis(self, analysis_result):
-        """Formatea el resultado del análisis de sentimientos para Telegram"""
+        """Formatea el resultado del análisis de sentimientos para Telegram de forma más compacta"""
         if 'error' in analysis_result:
-            return f"❌ **Error en el análisis**: {analysis_result['error']}"
+            return f"❌ <b>Error en el análisis</b>: {self.escape_html(analysis_result['error'])}"
         
         summary = analysis_result.get('summary', {})
         timestamp = analysis_result.get('timestamp', datetime.now().isoformat())
         
         # Emoji según sentimiento general
         sentiment_emoji = {
-            'positive': '📈 🟢',
-            'negative': '📉 🔴', 
-            'neutral': '➖ 🟡'
+            'positive': '📈🟢',
+            'negative': '📉🔴', 
+            'neutral': '➖🟡'
         }
         
         overall_sentiment = summary.get('overall_sentiment', 'neutral')
         emoji = sentiment_emoji.get(overall_sentiment, '❓')
         
-        message = f"""🗞️ **Análisis de Noticias Financieras**
+        # Encabezado más compacto
+        message = f"""🗞️ <b>ANÁLISIS DE NOTICIAS FINANCIERAS</b>
 
-{emoji} **Sentimiento General**: {overall_sentiment.upper()}
+{emoji} <b>Sentimiento General</b>: {overall_sentiment.upper()}
 
-📊 **Resumen:**
-• Total de artículos: {summary.get('total_articles', 0)}
-• Positivas: {summary.get('positive_percentage', 0):.1f}% ({summary.get('sentiment_breakdown', {}).get('positive', 0)})
-• Negativas: {summary.get('negative_percentage', 0):.1f}% ({summary.get('sentiment_breakdown', {}).get('negative', 0)})
-• Neutrales: {summary.get('neutral_percentage', 0):.1f}% ({summary.get('sentiment_breakdown', {}).get('neutral', 0)})
+📊 <b>Resumen:</b>
+• Artículos: {summary.get('total_articles', 0)}
+• Positivas: {summary.get('positive_percentage', 0):.1f}% 🟢
+• Negativas: {summary.get('negative_percentage', 0):.1f}% 🔴  
+• Neutrales: {summary.get('neutral_percentage', 0):.1f}% ⚪
 
-📰 **Noticias Destacadas:**"""
+📰 <b>Noticias Destacadas:</b>"""
         
-        # Agregar las noticias más relevantes
+        # Agregar las noticias más relevantes (máximo 6)
         analyzed_articles = analysis_result.get('analyzed_articles', [])
-        
-        # Mostrar más artículos, pero limitar para evitar mensajes muy largos
-        max_articles_to_show = min(len(analyzed_articles), 8)  # Mostrar hasta 8 artículos
+        max_articles_to_show = min(len(analyzed_articles), 6)
         
         for i, article_analysis in enumerate(analyzed_articles[:max_articles_to_show]):
             article = article_analysis.get('article', {})
@@ -120,35 +148,34 @@ class TelegramNotifier:
             final_sentiment = sentiment_data.get('final_sentiment', {}).get('sentiment', 'neutral')
             confidence = sentiment_data.get('confidence', 0)
             
-            article_emoji = sentiment_emoji.get(final_sentiment, '❓')
+            article_emoji = "🟢" if final_sentiment == 'positive' else "🔴" if final_sentiment == 'negative' else "⚪"
             
-            # Traducir el título al español
+            # Traducir y truncar título
             original_title = article.get('title', 'Sin título')
             translated_title = self.translate_title(original_title)
+            display_title = self.truncate_text(self.escape_html(translated_title), 80)
             
-            message += f"\n\n{i+1}. {article_emoji} **{translated_title[:80]}...**"
-            message += f"\n   • Sentimiento: {final_sentiment} ({confidence:.2f} confianza)"
-            message += f"\n   • Fuente: {article.get('source', 'Desconocida')}"
+            source = self.escape_html(article.get('source', 'Desconocida'))
             
-            # Mostrar tickers mencionados si están disponibles (de Alpha Vantage)
+            message += f"\n\n{i+1}. {article_emoji} <b>{display_title}</b>"
+            message += f"\n📍 <i>{source}</i> | Confianza: {confidence:.2f}"
+            
+            # Mostrar tickers mencionados si están disponibles
             if 'mentioned_tickers' in article_analysis and article_analysis['mentioned_tickers']:
-                tickers = ', '.join(article_analysis['mentioned_tickers'][:3])  # Mostrar máximo 3 tickers
-                message += f"\n   • Tickers: {tickers}"
-            
-            if article.get('url'):
-                message += f"\n   • [Leer más]({article['url']})"
+                tickers = ', '.join(article_analysis['mentioned_tickers'][:2])  # Máximo 2 tickers
+                message += f"\n💰 <code>{tickers}</code>"
         
-        # Agregar resumen de fuentes
-        sources_summary = self._get_sources_summary(analyzed_articles)
+        # Resumen de fuentes más compacto
+        sources_summary = self._get_sources_summary_compact(analyzed_articles)
         if sources_summary:
-            message += f"\n\n📊 **Fuentes utilizadas:**\n{sources_summary}"
+            message += f"\n\n📊 <b>Fuentes:</b> {sources_summary}"
         
-        message += f"\n\n🕐 **Análisis realizado**: {datetime.fromisoformat(timestamp[:19]).strftime('%d/%m/%Y %H:%M')}"
+        message += f"\n\n🕐 <i>Análisis: {datetime.fromisoformat(timestamp[:19]).strftime('%d/%m/%Y %H:%M')}</i>"
         
         return message
     
-    def _get_sources_summary(self, analyzed_articles):
-        """Genera un resumen de las fuentes utilizadas"""
+    def _get_sources_summary_compact(self, analyzed_articles):
+        """Genera un resumen compacto de las fuentes"""
         source_counts = {}
         for article_analysis in analyzed_articles:
             source = article_analysis.get('article', {}).get('source', 'Desconocida')
@@ -157,36 +184,68 @@ class TelegramNotifier:
         if not source_counts:
             return ""
         
-        summary_lines = []
-        for source, count in source_counts.items():
-            summary_lines.append(f"• {source}: {count} artículo{'s' if count > 1 else ''}")
-        
-        return '\n'.join(summary_lines)
+        # Mostrar solo las 3 fuentes principales
+        top_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        return ", ".join([f"{source}({count})" for source, count in top_sources])
     
     def format_simple_notification(self, title, content):
         """Formatea una notificación simple"""
         timestamp = datetime.now().strftime('%d/%m/%Y %H:%M')
-        return f"""🤖 **{title}**
+        return f"""🤖 <b>{self.escape_html(title)}</b>
 
-{content}
+{self.escape_html(content)}
 
-🕐 {timestamp}"""
+🕐 <i>{timestamp}</i>"""
     
     async def send_sentiment_analysis(self, analysis_result):
-        """Envía el resultado del análisis de sentimientos"""
+        """Envía el resultado del análisis de sentimientos dividido si es necesario"""
         formatted_message = self.format_sentiment_analysis(analysis_result)
         
-        # Telegram tiene límite de 4096 caracteres por mensaje
-        if len(formatted_message) > 4000:
-            # Dividir en múltiples mensajes
-            parts = self._split_message(formatted_message, 4000)
-            success = True
-            for part in parts:
-                result = await self.send_message(part)
-                success = success and result
-            return success
+        # Si el mensaje es muy largo, dividirlo
+        if len(formatted_message) > 3500:
+            return await self._send_split_messages(formatted_message)
         else:
             return await self.send_message(formatted_message)
+    
+    async def _send_split_messages(self, message):
+        """Envía mensajes largos divididos en partes"""
+        try:
+            # Dividir por secciones lógicas
+            parts = []
+            current_part = ""
+            
+            lines = message.split('\n')
+            
+            for line in lines:
+                # Si agregar esta línea excede el límite, guardar la parte actual
+                if len(current_part + line + '\n') > 3500:
+                    if current_part:
+                        parts.append(current_part.strip())
+                    current_part = line + '\n'
+                else:
+                    current_part += line + '\n'
+            
+            if current_part:
+                parts.append(current_part.strip())
+            
+            # Enviar partes numeradas
+            success = True
+            for i, part in enumerate(parts, 1):
+                part_with_header = f"📊 <b>Parte {i}/{len(parts)}</b>\n\n{part}"
+                result = await self.send_message(part_with_header)
+                success = success and result
+                await asyncio.sleep(0.3)  # Pequeña pausa entre mensajes
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Error enviando mensajes divididos: {e}")
+            # Intentar enviar versión muy corta
+            try:
+                short_msg = "📊 <b>Análisis completado</b>\n(El reporte completo era muy extenso)"
+                return await self.send_message(short_msg)
+            except:
+                return False
     
     async def send_error_notification(self, error_message):
         """Envía una notificación de error"""
@@ -204,26 +263,6 @@ class TelegramNotifier:
         )
         return await self.send_message(message)
     
-    def _split_message(self, message, max_length=4000):
-        """Divide un mensaje largo en partes más pequeñas"""
-        parts = []
-        current_part = ""
-        
-        lines = message.split('\n')
-        
-        for line in lines:
-            if len(current_part + line + '\n') <= max_length:
-                current_part += line + '\n'
-            else:
-                if current_part:
-                    parts.append(current_part.strip())
-                current_part = line + '\n'
-        
-        if current_part:
-            parts.append(current_part.strip())
-        
-        return parts
-    
     async def test_connection(self):
         """Prueba la conexión con Telegram"""
         try:
@@ -233,7 +272,7 @@ class TelegramNotifier:
             bot_info = await self.bot.get_me()
             self.logger.info(f"Conectado como: {bot_info.first_name} (@{bot_info.username})")
             
-            # Enviar mensaje de prueba
+            # Enviar mensaje de prueba simple
             test_message = self.format_simple_notification(
                 "Prueba de Conexión",
                 "🔄 Probando conexión con Telegram...\n✅ ¡Conexión exitosa!"
@@ -246,7 +285,8 @@ class TelegramNotifier:
             self.logger.error(f"Error probando conexión: {e}")
             return False
 
-# Función helper para uso síncrono
+
+# Función helper para uso síncrono (MANTENER ESTA VERSIÓN)
 def send_telegram_notification(analysis_result, bot_token=None, chat_id=None):
     """Función helper para enviar notificaciones de manera síncrona"""
     async def _send():
@@ -287,48 +327,3 @@ def send_telegram_notification(analysis_result, bot_token=None, chat_id=None):
             return loop.run_until_complete(_send())
         finally:
             loop.close()
-
-if __name__ == "__main__":
-    # Test del notificador
-    import asyncio
-    
-    async def test_notifier():
-        notifier = TelegramNotifier()
-        
-        # Prueba de conexión
-        print("Probando conexión...")
-        success = await notifier.test_connection()
-        print(f"Conexión {'exitosa' if success else 'fallida'}")
-        
-        if success:
-            # Prueba de análisis ficticio
-            test_analysis = {
-                'summary': {
-                    'total_articles': 3,
-                    'overall_sentiment': 'positive',
-                    'positive_percentage': 66.7,
-                    'negative_percentage': 33.3,
-                    'neutral_percentage': 0.0,
-                    'sentiment_breakdown': {'positive': 2, 'negative': 1, 'neutral': 0}
-                },
-                'analyzed_articles': [
-                    {
-                        'article': {
-                            'title': 'Stock Market Reaches New Heights',
-                            'source': 'Test News',
-                            'url': 'https://example.com'
-                        },
-                        'sentiment_analysis': {
-                            'final_sentiment': {'sentiment': 'positive'},
-                            'confidence': 0.85
-                        }
-                    }
-                ],
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            print("Enviando análisis de prueba...")
-            result = await notifier.send_sentiment_analysis(test_analysis)
-            print(f"Envío {'exitoso' if result else 'fallido'}")
-    
-    asyncio.run(test_notifier())
