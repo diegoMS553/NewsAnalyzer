@@ -16,7 +16,7 @@ flask==2.3.3
 gunicorn==21.2.0
 
 # Dependencias adicionales para parsing y feeds
-feedparser==6.0.10
+feedparser
 charset-normalizer==3.3.2
 
 # Para manejo de fechas y tiempo
