@@ -39,6 +39,18 @@ class Config:
         'https://www.investing.com/news/stock-market-news',
     ]
     
+    # Configuración de APIs y timeouts
+    API_REQUEST_TIMEOUT = int(os.getenv('API_REQUEST_TIMEOUT', 10))  # segundos
+    API_MAX_RETRIES = int(os.getenv('API_MAX_RETRIES', 2))  # número de reintentos
+    API_RETRY_DELAY = int(os.getenv('API_RETRY_DELAY', 2))  # segundos entre reintentos
+    API_FALLBACK_TIMEOUT = int(os.getenv('API_FALLBACK_TIMEOUT', 5))  # timeout para fallbacks
+    
+    # Configuración de Perplexity API
+    PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
+    PERPLEXITY_MODEL = os.getenv('PERPLEXITY_MODEL', 'sonar')  # Updated model name
+    PERPLEXITY_MAX_TOKENS = int(os.getenv('PERPLEXITY_MAX_TOKENS', 1000))
+    PERPLEXITY_TEMPERATURE = float(os.getenv('PERPLEXITY_TEMPERATURE', 0.2))  # Más determinístico para noticias
+    
     # Palabras clave para filtrar noticias financieras
     FINANCIAL_KEYWORDS = [
         'stock', 'market', 'trading', 'investment', 'financial', 'economy',
@@ -54,6 +66,16 @@ class Config:
             raise ValueError("TELEGRAM_BOT_TOKEN es requerido")
         if not cls.TELEGRAM_CHAT_ID:
             raise ValueError("TELEGRAM_CHAT_ID es requerido")
-        if not cls.ALPHA_VANTAGE_API_KEY:
-            raise ValueError("ALPHA_VANTAGE_API_KEY es requerido para el análisis de noticias")
+        
+        # Alpha Vantage es la fuente principal pero no obligatoria si hay otras APIs
+        has_alpha_vantage = bool(cls.ALPHA_VANTAGE_API_KEY)
+        has_perplexity = bool(cls.PERPLEXITY_API_KEY)
+        has_newsapi = bool(cls.NEWS_API_KEY)
+        
+        if not (has_alpha_vantage or has_perplexity or has_newsapi):
+            raise ValueError(
+                "Se requiere al menos una API de noticias configurada: "
+                "ALPHA_VANTAGE_API_KEY, PERPLEXITY_API_KEY, o NEWS_API_KEY"
+            )
+        
         return True

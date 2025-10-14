@@ -108,70 +108,108 @@ class TelegramNotifier:
             return False
     
     def format_sentiment_analysis(self, analysis_result):
-        """Formatea el resultado del análisis de sentimientos para Telegram de forma más compacta"""
+        """Formatea el resultado del análisis de sentimientos para Telegram con mejor estilo y enlaces"""
         if 'error' in analysis_result:
             return f"❌ <b>Error en el análisis</b>: {self.escape_html(analysis_result['error'])}"
-        
+
         summary = analysis_result.get('summary', {})
         timestamp = analysis_result.get('timestamp', datetime.now().isoformat())
-        
-        # Emoji según sentimiento general
+
+        # Emoji según sentimiento general con mejor diseño
         sentiment_emoji = {
-            'positive': '📈🟢',
-            'negative': '📉🔴', 
-            'neutral': '➖🟡'
+            'positive': '🚀📈🟢',
+            'negative': '⚠️📉🔴',
+            'neutral': '⚖️➖🟡'
         }
-        
+
         overall_sentiment = summary.get('overall_sentiment', 'neutral')
-        emoji = sentiment_emoji.get(overall_sentiment, '❓')
-        
-        # Encabezado más compacto
-        message = f"""🗞️ <b>ANÁLISIS DE NOTICIAS FINANCIERAS</b>
+        emoji = sentiment_emoji.get(overall_sentiment, '❓🤔')
 
-{emoji} <b>Sentimiento General</b>: {overall_sentiment.upper()}
+        # Encabezado mejorado con formato visual
+        message = f"""📰 <b>📊 ANÁLISIS DE NOTICIAS FINANCIERAS</b> 📊
 
-📊 <b>Resumen:</b>
-• Artículos: {summary.get('total_articles', 0)}
-• Positivas: {summary.get('positive_percentage', 0):.1f}% 🟢
-• Negativas: {summary.get('negative_percentage', 0):.1f}% 🔴  
-• Neutrales: {summary.get('neutral_percentage', 0):.1f}% ⚪
+{emoji} <b>Sentimiento del Mercado</b>: {overall_sentiment.upper()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📰 <b>Noticias Destacadas:</b>"""
-        
+📈 <b>RESUMEN EJECUTIVO</b>
+┌─ Artículos Analizados: {summary.get('total_articles', 0)} 📰
+├─ 🟢 Positivas: {summary.get('positive_percentage', 0):.1f}%
+├─ 🔴 Negativas: {summary.get('negative_percentage', 0):.1f}%
+└─ ⚪ Neutrales: {summary.get('neutral_percentage', 0):.1f}%
+
+🗞️ <b>NOTICIAS DESTACADAS</b>"""
+
         # Agregar las noticias más relevantes (máximo 6)
         analyzed_articles = analysis_result.get('analyzed_articles', [])
         max_articles_to_show = min(len(analyzed_articles), 6)
-        
+
         for i, article_analysis in enumerate(analyzed_articles[:max_articles_to_show]):
             article = article_analysis.get('article', {})
             sentiment_data = article_analysis.get('sentiment_analysis', {})
             final_sentiment = sentiment_data.get('final_sentiment', {}).get('sentiment', 'neutral')
             confidence = sentiment_data.get('confidence', 0)
-            
-            article_emoji = "🟢" if final_sentiment == 'positive' else "🔴" if final_sentiment == 'negative' else "⚪"
-            
+
+            # Mejor selección de emojis por sentimiento
+            sentiment_emojis = {
+                'positive': '🟢💚📈',
+                'negative': '🔴❤️📉',
+                'neutral': '⚪💛➖'
+            }
+            article_emoji = sentiment_emojis.get(final_sentiment, '⚪💭')
+
             # Traducir y truncar título
             original_title = article.get('title', 'Sin título')
             translated_title = self.translate_title(original_title)
-            display_title = self.truncate_text(self.escape_html(translated_title), 80)
-            
+            display_title = self.truncate_text(self.escape_html(translated_title), 70)
+
             source = self.escape_html(article.get('source', 'Desconocida'))
-            
-            message += f"\n\n{i+1}. {article_emoji} <b>{display_title}</b>"
-            message += f"\n📍 <i>{source}</i> | Confianza: {confidence:.2f}"
-            
+            article_url = article.get('url', '')
+
+            # Crear enlace clicable si está disponible
+            if article_url and article_url.startswith('http') and len(article_url) > 10:
+                # Escapar caracteres especiales en URLs para HTML
+                escaped_url = self.escape_html(article_url)
+                title_link = f"<a href='{escaped_url}'>{display_title}</a>"
+                # Si hay URL, mostrar indicador de enlace
+                link_indicator = " 🔗"
+            else:
+                title_link = f"<b>{display_title}</b>"
+                link_indicator = ""
+
+            message += f"\n\n{i+1}. {article_emoji} {title_link}{link_indicator}"
+
+            # Información adicional en línea más compacta
+            # Mejorar el formato de fuente para Perplexity
+            if 'Perplexity' in source:
+                source_display = "🔍 " + source
+                # Para artículos de Perplexity, mostrar indicador si no hay URL externa
+                if not article_url or not article_url.startswith('http') or len(article_url) <= 10:
+                    source_display += " (Resumen IA)"
+            else:
+                source_display = "📍 " + source
+
+            info_line = f"{source_display}"
+            if confidence > 0:
+                info_line += f" | 🎯 Confianza: {confidence:.2f}"
+
+            message += f"\n   {info_line}"
+
             # Mostrar tickers mencionados si están disponibles
             if 'mentioned_tickers' in article_analysis and article_analysis['mentioned_tickers']:
-                tickers = ', '.join(article_analysis['mentioned_tickers'][:2])  # Máximo 2 tickers
-                message += f"\n💰 <code>{tickers}</code>"
-        
-        # Resumen de fuentes más compacto
+                tickers = ', '.join(article_analysis['mentioned_tickers'][:3])  # Máximo 3 tickers
+                message += f"\n   💰 <code>{tickers}</code>"
+
+        # Resumen de fuentes mejorado
         sources_summary = self._get_sources_summary_compact(analyzed_articles)
         if sources_summary:
-            message += f"\n\n📊 <b>Fuentes:</b> {sources_summary}"
-        
-        message += f"\n\n🕐 <i>Análisis: {datetime.fromisoformat(timestamp[:19]).strftime('%d/%m/%Y %H:%M')}</i>"
-        
+            message += f"\n\n📊 <b>FUENTES PRINCIPALES:</b> {sources_summary}"
+
+        # Footer mejorado
+        analysis_time = datetime.fromisoformat(timestamp[:19]).strftime('%d/%m/%Y %H:%M')
+        message += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        message += f"\n🕐 <b>Análisis generado:</b> {analysis_time} UTC"
+        message += f"\n🤖 <i>Powered by Financial News Analyzer</i>"
+
         return message
     
     def _get_sources_summary_compact(self, analyzed_articles):

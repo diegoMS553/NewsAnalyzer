@@ -9,6 +9,7 @@ import feedparser
 import json
 import hashlib
 import os
+import re
 
 class AlphaVantageNewsAPI:
     """Obtiene noticias y análisis de sentimiento usando Alpha Vantage API"""
@@ -100,45 +101,63 @@ class AlphaVantageNewsAPI:
             if cached_data:
                 return self._process_articles_from_data(cached_data, limit)
         
+        # Implementar reintentos con timeouts optimizados
+        for attempt in range(Config.API_MAX_RETRIES + 1):
+            try:
+                response = requests.get(self.base_url, params=params, timeout=Config.API_REQUEST_TIMEOUT)
+                response.raise_for_status()
+                data = response.json()
+                break  # Éxito, salir del bucle de reintentos
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < Config.API_MAX_RETRIES:
+                    logging.warning(f"Alpha Vantage timeout/connection error (attempt {attempt + 1}/{Config.API_MAX_RETRIES + 1}): {e}")
+                    time.sleep(Config.API_RETRY_DELAY)
+                    continue
+                else:
+                    logging.error(f"Alpha Vantage API falló después de {Config.API_MAX_RETRIES + 1} intentos: {e}")
+                    return []
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Alpha Vantage API error en intento {attempt + 1}: {e}")
+                if attempt < Config.API_MAX_RETRIES:
+                    time.sleep(Config.API_RETRY_DELAY)
+                    continue
+                else:
+                    return []
+            except Exception as e:
+                logging.error(f"Error inesperado en Alpha Vantage API: {e}")
+                return []
+        else:
+            logging.error("Alpha Vantage API falló en todos los intentos")
+            return []
+        
+        # Verificar si hay error en la respuesta
+        if 'Error Message' in data:
+            logging.error(f"Alpha Vantage API Error: {data['Error Message']}")
+            return []
+        
+        if 'Note' in data:
+            note_msg = data['Note']
+            logging.warning(f"Alpha Vantage API Note: {note_msg}")
+            # Si es un rate limit, no hacer recursión para evitar bucles infinitos
+            if 'API call frequency' in note_msg or 'rate limit' in note_msg.lower():
+                logging.warning("Rate limit detectado - saltando esta solicitud para evitar costos extra")
+            return []
+        
+        if 'Information' in data:
+            info_msg = data['Information']
+            logging.warning(f"Alpha Vantage API Information: {info_msg}")
+            # Si es un rate limit, no hacer recursión para evitar bucles infinitos
+            if 'API call frequency' in info_msg or 'rate limit' in info_msg.lower():
+                logging.warning("Rate limit detectado - saltando esta solicitud para evitar costos extra")
+            return []
+        
         try:
-            response = requests.get(self.base_url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Verificar si hay error en la respuesta
-            if 'Error Message' in data:
-                logging.error(f"Alpha Vantage API Error: {data['Error Message']}")
-                return []
-            
-            if 'Note' in data:
-                note_msg = data['Note']
-                logging.warning(f"Alpha Vantage API Note: {note_msg}")
-                # Si es un rate limit, esperar un poco
-                if 'API call frequency' in note_msg or 'rate limit' in note_msg.lower():
-                    logging.info("Rate limit detectado, esperando 60 segundos...")
-                    time.sleep(60)
-                    return self.fetch_financial_news(limit, tickers, topics, time_from, time_to, sort)
-                return []
-            
-            if 'Information' in data:
-                info_msg = data['Information']
-                logging.warning(f"Alpha Vantage API Information: {info_msg}")
-                # Si es un rate limit, esperar un poco
-                if 'API call frequency' in info_msg or 'rate limit' in info_msg.lower():
-                    logging.info("Rate limit detectado, esperando 60 segundos...")
-                    time.sleep(60)
-                    return self.fetch_financial_news(limit, tickers, topics, time_from, time_to, sort)
-                return []
-            
             # Guardar en caché
             self._save_to_cache(cache_file, data)
             
             # Procesar los artículos
             return self._process_articles_from_data(data, limit)
             
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error de conexión con Alpha Vantage API: {e}")
-            return []
         except Exception as e:
             logging.error(f"Error procesando respuesta de Alpha Vantage API: {e}")
             return []
@@ -249,6 +268,7 @@ class NewsAPI:
     def fetch_financial_news(self, limit=10):
         """Obtiene noticias financieras de NewsAPI"""
         if not self.api_key:
+            logging.debug("NewsAPI key no configurada")
             return []
         
         params = {
@@ -259,28 +279,299 @@ class NewsAPI:
             'apiKey': self.api_key
         }
         
+        # Implementar reintentos con timeouts optimizados
+        for attempt in range(Config.API_MAX_RETRIES + 1):
+            try:
+                response = requests.get(self.base_url, params=params, timeout=Config.API_REQUEST_TIMEOUT)
+                response.raise_for_status()
+                data = response.json()
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < Config.API_MAX_RETRIES:
+                    logging.warning(f"NewsAPI timeout/connection error (attempt {attempt + 1}/{Config.API_MAX_RETRIES + 1}): {e}")
+                    time.sleep(Config.API_RETRY_DELAY)
+                    continue
+                else:
+                    logging.error(f"NewsAPI falló después de {Config.API_MAX_RETRIES + 1} intentos")
+                    return []
+            except requests.exceptions.RequestException as e:
+                logging.error(f"NewsAPI error: {e}")
+                return []
+            except Exception as e:
+                logging.error(f"Error inesperado en NewsAPI: {e}")
+                return []
+        else:
+            return []
+        
+        # Verificar respuesta válida
+        if data.get('status') != 'ok':
+            error_msg = data.get('message', 'Error desconocido')
+            logging.error(f"NewsAPI error: {error_msg}")
+            return []
+        
+        articles = []
+        for article in data.get('articles', []):
+            if article.get('title') and article.get('description'):
+                articles.append({
+                    'title': article['title'],
+                    'description': article['description'],
+                    'content': article.get('content', ''),
+                    'url': article.get('url', ''),
+                    'published_at': article.get('publishedAt'),
+                    'source': 'NewsAPI'
+                })
+        
+        return articles
+
+class PerplexityAPI:
+    """Obtiene noticias usando Perplexity Sonar API para búsquedas web avanzadas"""
+    
+    def __init__(self, api_key=None):
+        self.api_key = api_key or Config.PERPLEXITY_API_KEY
+        self.base_url = "https://api.perplexity.ai/chat/completions"
+        self.model = Config.PERPLEXITY_MODEL
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        })
+    
+    def fetch_financial_news(self, limit=10, query_topics=None):
+        """Obtiene noticias financieras usando Perplexity Sonar"""
+        if not self.api_key:
+            logging.debug("Perplexity API key no configurada")
+            return []
+        
+        # Construir query de búsqueda
+        base_query = "latest financial news today stock market economy trading"
+        if query_topics:
+            if isinstance(query_topics, list):
+                topic_str = " ".join(query_topics)
+            else:
+                topic_str = str(query_topics)
+            query = f"{base_query} {topic_str}"
+        else:
+            query = base_query
+        
+        # Prompt mejorado para forzar el formato correcto
+        messages = [{
+            "role": "system",
+            "content": """Eres un asistente especializado en noticias financieras. Tu tarea es:
+                        1. Buscar las noticias financieras más recientes e importantes para Cripto y Forex.
+                        2. Para CADA noticia, proporcionar:
+                        - Título claro y descriptivo
+                        - Resumen conciso de los puntos clave (2-3 frases)
+                        - Fuente original (Bloomberg, Reuters, WSJ, etc.)
+                        - Enlace URL directo al artículo original
+                        3. Formato OBLIGATORIO para cada noticia:
+                        TÍTULO: [título aquí]
+                        RESUMEN: [resumen aquí]
+                        FUENTE: [nombre de la fuente]
+                        URL: [https://enlace.com]
+
+                        IMPORTANTE: 
+                        - Incluye SIEMPRE el enlace URL directo
+                        - Usa solo fuentes confiables (Bloomberg, Reuters, WSJ, FT, CNBC, etc.)
+                        - Enfócate en noticias de hoy o ayer
+                        - Proporciona información real, no inventes"""
+        }, {
+            "role": "user",
+            "content": f"Busca las {limit} noticias financieras más recientes sobre: {query}. Devuélvelas en el formato especificado, asegurándote de incluir el TÍTULO, RESUMEN, FUENTE y URL para cada una."
+        }]
+        
+        payload = {
+            "model": "sonar",
+            "messages": messages,
+            "max_tokens": min(Config.PERPLEXITY_MAX_TOKENS, 4000),
+            "temperature": max(0.0, min(1.0, Config.PERPLEXITY_TEMPERATURE)),
+            "stream": False,
+            "return_images": False,
+            "return_related_questions": False,
+            "search_recency_filter": "day"
+        }
+        
+        # Implementar reintentos
+        for attempt in range(Config.API_MAX_RETRIES + 1):
+            try:
+                response = self.session.post(
+                    self.base_url, 
+                    json=payload, 
+                    timeout=Config.API_REQUEST_TIMEOUT
+                )
+                response.raise_for_status()
+                data = response.json()
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < Config.API_MAX_RETRIES:
+                    logging.warning(f"Perplexity timeout/connection error (attempt {attempt + 1}/{Config.API_MAX_RETRIES + 1}): {e}")
+                    time.sleep(Config.API_RETRY_DELAY)
+                    continue
+                else:
+                    logging.error(f"Perplexity API falló después de {Config.API_MAX_RETRIES + 1} intentos")
+                    return []
+            except requests.exceptions.RequestException as e:
+                error_details = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_json = e.response.json()
+                        error_details += f" - Response: {error_json}"
+                    except:
+                        error_details += f" - Response text: {e.response.text[:500]}"
+                logging.error(f"Perplexity API error: {error_details}")
+                return []
+            except Exception as e:
+                logging.error(f"Error inesperado en Perplexity API: {e}")
+                return []
+        else:
+            return []
+        
         try:
-            response = requests.get(self.base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            if 'choices' not in data or not data['choices']:
+                logging.error("Respuesta inválida de Perplexity API")
+                return []
             
-            articles = []
-            for article in data.get('articles', []):
-                if article.get('title') and article.get('description'):
-                    articles.append({
-                        'title': article['title'],
-                        'description': article['description'],
-                        'content': article.get('content', ''),
-                        'url': article.get('url', ''),
-                        'published_at': article.get('publishedAt'),
-                        'source': 'NewsAPI'
-                    })
-            
-            return articles
+            content = data['choices'][0]['message']['content']
+            return self._parse_news_from_content(content, limit)
             
         except Exception as e:
-            logging.error(f"Error fetching from NewsAPI: {e}")
+            logging.error(f"Error procesando respuesta de Perplexity: {e}")
             return []
+    
+    def _parse_news_from_content(self, content, limit):
+        """Parsea el contenido usando el nuevo formato estructurado"""
+        articles = []
+
+        try:
+            # Dividir el contenido en bloques de noticias
+            blocks = content.split('\n\n')
+            current_article = {}
+            
+            for block in blocks:
+                block = block.strip()
+                if not block:
+                    continue
+                
+                # Buscar campos estructurados
+                if block.startswith('TÍTULO:') or block.startswith('TITULO:'):
+                    title = block.split(':', 1)[1].strip()
+                    current_article['title'] = title
+                    
+                elif block.startswith('RESUMEN:'):
+                    summary = block.split(':', 1)[1].strip()
+                    current_article['description'] = summary
+                    current_article['content'] = summary
+                    
+                elif block.startswith('FUENTE:'):
+                    source = block.split(':', 1)[1].strip()
+                    current_article['source'] = f"Perplexity Sonar - {source}"
+                    
+                elif block.startswith('URL:'):
+                    url = block.split(':', 1)[1].strip()
+                    current_article['url'] = url
+                    
+                    # Si tenemos todos los campos, agregar el artículo
+                    if all(key in current_article for key in ['title', 'description', 'url']):
+                        current_article['published_at'] = datetime.now().isoformat()
+                        articles.append(current_article)
+                        current_article = {}
+                        
+                        if len(articles) >= limit:
+                            break
+            
+            # Si el formato estructurado no funcionó, intentar métodos alternativos
+            if not articles:
+                articles = self._fallback_parsing(content, limit)
+                
+        except Exception as e:
+            logging.error(f"Error parsing Perplexity content: {e}")
+            # Intentar parsing de respaldo
+            articles = self._fallback_parsing(content, limit)
+
+        logging.info(f"Perplexity API obtuvo {len(articles)} artículos")
+        return articles[:limit]
+
+    def _fallback_parsing(self, content, limit):
+        """Métodos alternativos de parsing cuando el formato estructurado falla"""
+        articles = []
+        
+        # Método 1: Buscar patrones de noticias con URLs
+        news_patterns = [
+            # Patrón: Título - Resumen (Fuente) URL
+            r'(\d+\.\s*)?([^-]+?)\s*-\s*([^(]+?)\s*\(([^)]+)\)\s*(https?://[^\s]+)',
+            # Patrón: Título: Resumen. Fuente: URL
+            r'([^:]+?):\s*([^.]+)\.\s*(?:Fuente|Source):\s*([^\s]+)\s*(https?://[^\s]+)',
+        ]
+        
+        for pattern in news_patterns:
+            matches = re.findall(pattern, content)
+            for match in matches:
+                if len(articles) >= limit:
+                    break
+                    
+                if len(match) == 5:  # Primer patrón
+                    _, title, summary, source, url = match
+                else:  # Segundo patrón
+                    title, summary, source, url = match
+                
+                title = title.strip()
+                summary = summary.strip()
+                source = source.strip()
+                url = url.strip()
+                
+                if title and summary and url:
+                    articles.append({
+                        'title': title,
+                        'description': summary[:300] + '...' if len(summary) > 300 else summary,
+                        'content': summary,
+                        'url': url,
+                        'published_at': datetime.now().isoformat(),
+                        'source': f"Perplexity Sonar - {source}"
+                    })
+        
+        # Método 2: Buscar líneas que contengan URLs y extraer contexto
+        if not articles:
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if len(articles) >= limit:
+                    break
+                    
+                # Buscar URLs en la línea
+                url_matches = re.findall(r'https?://[^\s\)\]"\']+', line)
+                if url_matches:
+                    url = url_matches[0]
+                    
+                    # Buscar título en líneas anteriores
+                    title = ""
+                    for j in range(max(0, i-2), i):
+                        if lines[j].strip() and len(lines[j].strip()) > 10:
+                            title = lines[j].strip()
+                            break
+                    
+                    # Buscar resumen en líneas siguientes
+                    summary = ""
+                    for j in range(i+1, min(len(lines), i+4)):
+                        if lines[j].strip() and len(lines[j].strip()) > 20:
+                            summary = lines[j].strip()
+                            break
+                    
+                    if title or summary:
+                        articles.append({
+                            'title': title or "Noticia financiera",
+                            'description': summary[:300] + '...' if len(summary) > 300 else summary,
+                            'content': summary,
+                            'url': url,
+                            'published_at': datetime.now().isoformat(),
+                            'source': "Perplexity Sonar"
+                        })
+        
+        return articles
+
+    def search_specific_topics(self, topics, limit=5):
+        """Busca noticias sobre temas específicos"""
+        if isinstance(topics, str):
+            topics = [topics]
+        return self.fetch_financial_news(limit=limit, query_topics=topics)
 
 class YahooFinanceNews:
     """Obtiene noticias de Yahoo Finance (gratuito)"""
@@ -315,7 +606,7 @@ class YahooFinanceNews:
                     try:
                         # Add a timeout and better error handling for yfinance requests
                         import socket
-                        socket.setdefaulttimeout(10)
+                        socket.setdefaulttimeout(Config.API_FALLBACK_TIMEOUT)
                         
                         # Try to get news with comprehensive error handling
                         try:
@@ -412,7 +703,7 @@ class YahooFinanceNews:
         """Fallback method to scrape Yahoo Finance directly"""
         try:
             url = "https://finance.yahoo.com/news/"
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(url, timeout=Config.API_FALLBACK_TIMEOUT)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -498,7 +789,7 @@ class WebScraper:
         for url in urls_to_try:
             try:
                 time.sleep(1)  # Small delay between requests
-                response = self.session.get(url, timeout=20)
+                response = self.session.get(url, timeout=Config.API_FALLBACK_TIMEOUT)
                 if response.status_code == 200:
                     successful_url = url
                     break
@@ -639,7 +930,7 @@ class WebScraper:
                 headers = self.headers.copy()
                 headers['Referer'] = 'https://www.investing.com/'
                 
-                response = self.session.get(url, headers=headers, timeout=20)
+                response = self.session.get(url, headers=headers, timeout=Config.API_FALLBACK_TIMEOUT)
                 
                 # Handle different response codes
                 if response.status_code == 403:
@@ -781,7 +1072,7 @@ class RSSFeedNews:
                 
                 # Try to fetch with requests first (for better error handling)
                 try:
-                    response = self.session.get(feed_url, timeout=15)
+                    response = self.session.get(feed_url, timeout=Config.API_REQUEST_TIMEOUT)
                     if response.status_code == 200:
                         feed = feedparser.parse(response.content)
                     else:
@@ -893,6 +1184,7 @@ class NewsAggregator:
         self.alpha_vantage_api = AlphaVantageNewsAPI()
         self.yahoo_news = YahooFinanceNews()
         self.rss_news = RSSFeedNews()
+        self.perplexity_api = PerplexityAPI()
         self.logger = logging.getLogger(__name__)
         
         # Solo habilitar scraping si se especifica explícitamente
@@ -907,33 +1199,41 @@ class NewsAggregator:
         max_articles = max_articles or Config.MAX_NEWS_PER_ANALYSIS
         all_articles = []
         
-        # Verificar si Alpha Vantage está disponible y configurado
+        # Verificar APIs disponibles
         alpha_vantage_available = bool(Config.ALPHA_VANTAGE_API_KEY)
+        perplexity_available = bool(Config.PERPLEXITY_API_KEY)
         
+        # Ajustar cuotas basado en APIs disponibles
+        total_sources = 2  # NewsAPI, Yahoo (siempre disponibles)
         if alpha_vantage_available:
-            # Alpha Vantage como fuente principal pero sin dominar completamente
+            total_sources += 1
+        if perplexity_available:
+            total_sources += 1
+        
+        base_quota = max_articles // total_sources
+        
+        # Alpha Vantage (si está disponible)
+        if alpha_vantage_available:
             try:
-                alpha_vantage_articles = self.alpha_vantage_api.fetch_financial_news(max_articles // 3)
+                alpha_vantage_articles = self.alpha_vantage_api.fetch_financial_news(base_quota)
                 all_articles.extend(alpha_vantage_articles)
                 self.logger.info(f"Obtenidos {len(alpha_vantage_articles)} artículos de Alpha Vantage")
-                
-                # Mantener cuotas balanceadas para otras fuentes
-                newsapi_quota = max_articles // 4
-                yahoo_quota = max_articles // 4
-                scraping_quota = max_articles // 6
-                    
             except Exception as e:
                 self.logger.warning(f"Alpha Vantage API no disponible: {e}")
-                alpha_vantage_available = False
-                # Usar cuotas normales si Alpha Vantage falla
-                newsapi_quota = max_articles // 3
-                yahoo_quota = max_articles // 3
-                scraping_quota = max_articles // 4
-        else:
-            # Si Alpha Vantage no está disponible, usar cuotas normales
-            newsapi_quota = max_articles // 3
-            yahoo_quota = max_articles // 3
-            scraping_quota = max_articles // 4
+        
+        # Perplexity Sonar (si está disponible) - excelente para noticias actuales
+        if perplexity_available:
+            try:
+                perplexity_articles = self.perplexity_api.fetch_financial_news(base_quota)
+                all_articles.extend(perplexity_articles)
+                self.logger.info(f"Obtenidos {len(perplexity_articles)} artículos de Perplexity Sonar")
+            except Exception as e:
+                self.logger.warning(f"Perplexity API no disponible: {e}")
+        
+        # Configurar cuotas para otras fuentes
+        newsapi_quota = base_quota
+        yahoo_quota = base_quota
+        scraping_quota = max_articles // 6
         
         # Intentar obtener de NewsAPI
         try:
@@ -1064,6 +1364,21 @@ class NewsAggregator:
             return articles
         except Exception as e:
             self.logger.error(f"Error obteniendo noticias por rango de tiempo: {e}")
+            return []
+    
+    def search_news_with_perplexity(self, query_topics, max_articles=None):
+        """Busca noticias específicas usando Perplexity Sonar"""
+        max_articles = max_articles or Config.MAX_NEWS_PER_ANALYSIS
+        try:
+            if Config.PERPLEXITY_API_KEY:
+                articles = self.perplexity_api.search_specific_topics(query_topics, max_articles)
+                self.logger.info(f"Obtenidos {len(articles)} artículos de Perplexity para: {query_topics}")
+                return articles
+            else:
+                self.logger.warning("Perplexity API key no configurada")
+                return []
+        except Exception as e:
+            self.logger.error(f"Error buscando noticias con Perplexity: {e}")
             return []
 
 if __name__ == "__main__":
