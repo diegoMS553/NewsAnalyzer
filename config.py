@@ -8,10 +8,24 @@ class Config:
     # Telegram
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+    TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS')  # Para múltiples destinatarios
+
+    @property
+    def TELEGRAM_CHAT_ID_LIST(self):
+        """Devuelve lista de chat IDs (soporta single y múltiples)"""
+        if self.TELEGRAM_CHAT_IDS:
+            # Soporta formato: "123456789,987654321" o "123456789"
+            return [chat_id.strip() for chat_id in self.TELEGRAM_CHAT_IDS.split(',') if chat_id.strip()]
+        elif self.TELEGRAM_CHAT_ID:
+            # Formato legacy: single chat ID
+            return [self.TELEGRAM_CHAT_ID]
+        else:
+            return []
     
     # APIs de noticias
     NEWS_API_KEY = os.getenv('NEWS_API_KEY')
     ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
+    ALPHA_VANTAGE_API_KEY2 = os.getenv('ALPHA_VANTAGE_API_KEY2')
     
     # Configuración Alpha Vantage
     ALPHA_VANTAGE_PRIORITY = os.getenv('ALPHA_VANTAGE_PRIORITY', 'true').lower() == 'true'
@@ -64,8 +78,17 @@ class Config:
         """Valida que la configuración esté completa"""
         if not cls.TELEGRAM_BOT_TOKEN:
             raise ValueError("TELEGRAM_BOT_TOKEN es requerido")
-        if not cls.TELEGRAM_CHAT_ID:
-            raise ValueError("TELEGRAM_CHAT_ID es requerido")
+
+        # Validar que haya al menos un chat ID (legacy o nuevo formato)
+        if cls.TELEGRAM_CHAT_IDS:
+            chat_ids = [chat_id.strip() for chat_id in cls.TELEGRAM_CHAT_IDS.split(',') if chat_id.strip()]
+        elif cls.TELEGRAM_CHAT_ID:
+            chat_ids = [cls.TELEGRAM_CHAT_ID]
+        else:
+            chat_ids = []
+
+        if not chat_ids:
+            raise ValueError("TELEGRAM_CHAT_ID o TELEGRAM_CHAT_IDS es requerido")
         
         # Alpha Vantage es la fuente principal pero no obligatoria si hay otras APIs
         has_alpha_vantage = bool(cls.ALPHA_VANTAGE_API_KEY)

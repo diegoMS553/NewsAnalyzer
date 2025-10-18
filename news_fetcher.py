@@ -258,6 +258,117 @@ class AlphaVantageNewsAPI:
         """Obtiene noticias en un rango de tiempo específico"""
         return self.fetch_financial_news(limit=limit, time_from=time_from, time_to=time_to)
 
+
+class AlternativeNewsAPI:
+    """API alternativa para noticias financieras como respaldo"""
+
+    def __init__(self, api_key=None):
+        self.api_key = api_key or Config.ALPHA_VANTAGE_API_KEY2
+        self.base_url = "https://www.alphavantage.co/query"
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        })
+
+    def fetch_financial_news(self, limit=10, tickers=None, topics=None):
+        """Obtiene noticias usando parámetros alternativos cuando Alpha Vantage principal falla"""
+        if not self.api_key:
+            logging.warning("Alternative API key no configurada")
+            return []
+
+        # Usar parámetros más específicos para evitar rate limits
+        params = {
+            'function': 'NEWS_SENTIMENT',
+            'apikey': self.api_key,
+            'limit': min(limit, 50),  # Límite más bajo para evitar problemas
+            'sort': 'LATEST'
+        }
+
+        # Agregar filtros más específicos
+        if tickers:
+            if isinstance(tickers, list):
+                tickers = ','.join(tickers[:3])  # Máximo 3 tickers
+            params['tickers'] = tickers
+
+        if topics:
+            if isinstance(topics, list):
+                topics = ','.join(topics[:2])  # Máximo 2 temas
+            params['topics'] = topics
+
+        # Implementar reintentos con delays más largos
+        for attempt in range(3):  # Menos reintentos
+            try:
+                response = self.session.get(self.base_url, params=params, timeout=15)
+                response.raise_for_status()
+                data = response.json()
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < 2:
+                    logging.warning(f"Alternative API timeout (attempt {attempt + 1}/3): {e}")
+                    time.sleep(2)  # Delay más largo
+                    continue
+                else:
+                    logging.error(f"Alternative API falló después de 3 intentos: {e}")
+                    return []
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Alternative API error: {e}")
+                return []
+            except Exception as e:
+                logging.error(f"Error inesperado en Alternative API: {e}")
+                return []
+        else:
+            return []
+
+        # Verificar si hay error en la respuesta
+        if 'Error Message' in data:
+            logging.error(f"Alternative API Error: {data['Error Message']}")
+            return []
+
+        if 'Note' in data:
+            note_msg = data['Note']
+            logging.warning(f"Alternative API Note: {note_msg}")
+            if 'rate limit' in note_msg.lower():
+                logging.warning("Rate limit en API alternativa - reducir frecuencia de uso")
+            return []
+
+        try:
+            # Procesar los artículos usando la misma lógica que Alpha Vantage
+            articles = []
+            feed_data = data.get('feed', [])
+
+            for item in feed_data[:limit]:
+                try:
+                    title = item.get('title', '')
+                    summary = item.get('summary', '')
+                    url = item.get('url', '')
+                    source = item.get('source', 'Alternative API')
+
+                    # Crear descripción enriquecida
+                    enhanced_description = f"{summary}"
+
+                    articles.append({
+                        'title': title,
+                        'description': enhanced_description,
+                        'content': summary,
+                        'url': url,
+                        'published_at': datetime.now().isoformat(),
+                        'source': f'{source} (Alternative API)',
+                    })
+
+                except Exception as item_error:
+                    logging.debug(f"Error procesando artículo alternativo: {item_error}")
+                    continue
+
+            logging.info(f"Alternative API obtuvo {len(articles)} artículos")
+            return articles
+
+        except Exception as e:
+            logging.error(f"Error procesando respuesta de Alternative API: {e}")
+            return []
+
+
 class NewsAPI:
     """Obtiene noticias usando NewsAPI (gratuito hasta 1000 requests/día)"""
     
@@ -364,20 +475,23 @@ class PerplexityAPI:
                         - Resumen conciso de los puntos clave (2-3 frases)
                         - Fuente original (Bloomberg, Reuters, WSJ, etc.)
                         - Enlace URL directo al artículo original
+                        - Sentimiento de la noticia (POSITIVO, NEGATIVO, o NEUTRO) basado en el impacto en los mercados.
                         3. Formato OBLIGATORIO para cada noticia:
                         TÍTULO: [título aquí]
                         RESUMEN: [resumen aquí]
                         FUENTE: [nombre de la fuente]
                         URL: [https://enlace.com]
+                        SENTIMIENTO: [POSITIVO/NEGATIVO/NEUTRO]
 
-                        IMPORTANTE: 
+                        IMPORTANTE:
                         - Incluye SIEMPRE el enlace URL directo
                         - Usa solo fuentes confiables (Bloomberg, Reuters, WSJ, FT, CNBC, etc.)
-                        - Enfócate en noticias de hoy o ayer
+                        - Enfócate en noticias de hoy
+                        - Evalúa el sentimiento basado en el impacto real en mercados financieros
                         - Proporciona información real, no inventes"""
         }, {
             "role": "user",
-            "content": f"Busca las {limit} noticias financieras más recientes sobre: {query}. Devuélvelas en el formato especificado, asegurándote de incluir el TÍTULO, RESUMEN, FUENTE y URL para cada una."
+            "content": f"Busca las {limit} noticias financieras más recientes sobre: {query}. Devuélvelas en el formato especificado, asegurándote de incluir el TÍTULO, RESUMEN, FUENTE, URL y SENTIMIENTO para cada una. Evalúa si cada noticia tiene impacto POSITIVO, NEGATIVO o NEUTRO en los mercados financieros."
         }]
         
         payload = {
@@ -456,26 +570,36 @@ class PerplexityAPI:
                 if block.startswith('TÍTULO:') or block.startswith('TITULO:'):
                     title = block.split(':', 1)[1].strip()
                     current_article['title'] = title
-                    
+
                 elif block.startswith('RESUMEN:'):
                     summary = block.split(':', 1)[1].strip()
                     current_article['description'] = summary
                     current_article['content'] = summary
-                    
+
                 elif block.startswith('FUENTE:'):
                     source = block.split(':', 1)[1].strip()
                     current_article['source'] = f"Perplexity Sonar - {source}"
-                    
+
                 elif block.startswith('URL:'):
                     url = block.split(':', 1)[1].strip()
                     current_article['url'] = url
-                    
+
+                elif block.startswith('SENTIMIENTO:'):
+                    sentiment = block.split(':', 1)[1].strip().upper()
+                    # Mapear sentimiento a formato estándar
+                    sentiment_map = {
+                        'POSITIVO': 'positive',
+                        'NEGATIVO': 'negative',
+                        'NEUTRO': 'neutral'
+                    }
+                    current_article['perplexity_sentiment'] = sentiment_map.get(sentiment, 'neutral')
+
                     # Si tenemos todos los campos, agregar el artículo
                     if all(key in current_article for key in ['title', 'description', 'url']):
                         current_article['published_at'] = datetime.now().isoformat()
                         articles.append(current_article)
                         current_article = {}
-                        
+
                         if len(articles) >= limit:
                             break
             
@@ -589,66 +713,67 @@ class YahooFinanceNews:
         self.session.headers.update(self.headers)
     
     def fetch_financial_news(self, limit=10):
-        """Obtiene noticias financieras de Yahoo Finance usando scraping como fallback"""
+        """Obtiene noticias financieras de Yahoo Finance usando solo la librería yfinance (scraping deshabilitado)"""
         articles = []
-        
-        # First try the yfinance library approach with better error handling
+
+        # Solo usar yfinance library approach (scraping deshabilitado)
         try:
-            tickers = ['^GSPC', '^DJI', '^IXIC', '^ORCL', '^TSLA', '^NVDA', '^MSFT', '^BTC', '^ETH', '^XRP', '^SOL' ]   # S&P 500, Dow Jones, NASDAQ, Russell 2000, Oracle, Tesla, Nvidia, Microsoft, Bitcoin, Ethereum,
-            
+            # Tickers más relevantes para noticias financieras
+            tickers = ['^GSPC', '^DJI', '^IXIC', '^VIX', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA']
+
             for ticker in tickers:
                 try:
                     # Use a more robust approach with timeout
                     import yfinance as yf
                     stock = yf.Ticker(ticker)
-                    
+
                     # Set a timeout for the request and handle potential JSON errors
                     try:
                         # Add a timeout and better error handling for yfinance requests
                         import socket
                         socket.setdefaulttimeout(Config.API_FALLBACK_TIMEOUT)
-                        
+
                         # Try to get news with comprehensive error handling
                         try:
                             news = stock.news
                         except Exception as fetch_err:
                             logging.debug(f"Failed to fetch news for {ticker}: {fetch_err}")
                             continue
-                            
+
                         # Check if news is valid and not empty
                         if not news:
                             logging.debug(f"No news data returned for {ticker}")
                             continue
-                            
+
                         if not isinstance(news, list):
                             logging.debug(f"Invalid news data format for {ticker}: {type(news)}")
                             continue
-                            
+
                         if len(news) == 0:
                             logging.debug(f"Empty news list returned for {ticker}")
                             continue
-                            
+
                         # Process valid news items
                         for item in news[:max(1, limit//len(tickers))]:
                             try:
                                 if not isinstance(item, dict):
                                     logging.debug(f"Skipping non-dict news item for {ticker}")
                                     continue
-                                    
+
                                 title = item.get('title', '')
                                 if not title or not isinstance(title, str) or len(title.strip()) < 5:
                                     logging.debug(f"Skipping news item with invalid title for {ticker}")
                                     continue
-                                    
+
                                 # Extract other fields with validation
                                 summary = item.get('summary', item.get('title', ''))
                                 if not isinstance(summary, str):
                                     summary = str(summary) if summary else title
-                                    
+
                                 link = item.get('link', '')
                                 if not isinstance(link, str):
                                     link = ''
-                                    
+
                                 # Handle publication time safely
                                 pub_time = item.get('providerPublishTime')
                                 if pub_time and isinstance(pub_time, (int, float)):
@@ -658,7 +783,7 @@ class YahooFinanceNews:
                                         published_at = datetime.now().isoformat()
                                 else:
                                     published_at = datetime.now().isoformat()
-                                    
+
                                 articles.append({
                                     'title': title.strip(),
                                     'description': summary[:200] + '...' if len(summary) > 200 else summary,
@@ -667,11 +792,11 @@ class YahooFinanceNews:
                                     'published_at': published_at,
                                     'source': f'Yahoo Finance ({ticker})'
                                 })
-                                
+
                             except Exception as item_err:
                                 logging.debug(f"Error processing news item for {ticker}: {item_err}")
                                 continue
-                                
+
                     except Exception as json_err:
                         # More specific error logging
                         error_msg = str(json_err)
@@ -680,23 +805,21 @@ class YahooFinanceNews:
                         else:
                             logging.warning(f"Error processing news for {ticker}: {json_err}")
                         continue
-                        
+
                 except Exception as e:
                     logging.warning(f"Error fetching news for {ticker}: {e}")
                     continue
-                    
+
             # If we got some articles from yfinance, return them
             if articles:
+                logging.info(f"Yahoo Finance obtuvo {len(articles)} artículos usando yfinance library")
                 return articles[:limit]
-                
+            else:
+                logging.info("No se obtuvieron artículos de Yahoo Finance usando yfinance library")
+                return []
+
         except Exception as e:
-            logging.warning(f"YFinance library failed: {e}")
-        
-        # Fallback: Try scraping Yahoo Finance directly
-        try:
-            return self._scrape_yahoo_finance_direct(limit)
-        except Exception as e:
-            logging.error(f"Yahoo Finance scraping fallback failed: {e}")
+            logging.error(f"Yahoo Finance library failed: {e}")
             return []
     
     def _scrape_yahoo_finance_direct(self, limit=10):
@@ -1037,25 +1160,42 @@ class WebScraper:
         return any(keyword in text_lower for keyword in Config.FINANCIAL_KEYWORDS)
 
 class RSSFeedNews:
-    """Obtiene noticias de RSS feeds financieros gratuitos"""
-    
+    """Obtiene noticias de RSS feeds financieros gratuitos con mejor manejo de errores"""
+
     def __init__(self):
-        # Updated with working RSS feeds (ordered by reliability)
+        # RSS feeds más confiables y activos (ordenados por fiabilidad)
         self.rss_feeds = [
-            'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',  # WSJ Markets - most reliable
+            'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',  # WSJ Markets - más confiable
             'https://www.nasdaq.com/feed/rssoutbound?category=stocks',  # NASDAQ
             'https://finance.yahoo.com/news/rssindex',  # Yahoo Finance
-            'https://feeds.reuters.com/reuters/businessNews',  # Reuters
-            'https://www.ft.com/rss/feed/companies',  # Financial Times
-            'https://feeds.bloomberg.com/markets/news.rss'  # Bloomberg (may be limited)
+            'https://feeds.reuters.com/reuters/businessNews',  # Reuters Business News
+            'https://feeds.reuters.com/reuters/companyNews',  # Reuters Company News
+            'https://www.investing.com/rss/news.rss',  # Investing.com
+            'https://www.marketwatch.com/rss/topstories',  # MarketWatch
+            'https://www.cnbc.com/id/100003114/device/rss/rss.html',  # CNBC Top Stories
+            'https://www.cnbc.com/id/10001147/device/rss/rss.html',  # CNBC Latest News
+            'https://www.ft.com/rss/home/uk',  # Financial Times
         ]
-        
+
         # Set up session with proper headers for RSS feeds
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept': 'application/rss+xml, application/xml, text/xml'
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive'
         })
+
+        # Lista de palabras clave financieras para filtrar
+        self.financial_keywords = [
+            'stock', 'market', 'trading', 'economy', 'financial', 'business',
+            'earnings', 'revenue', 'profit', 'loss', 'ipo', 'merger', 'acquisition',
+            'federal reserve', 'fed', 'interest rate', 'inflation', 'recession',
+            'dollar', 'euro', 'yen', 'bitcoin', 'crypto', 'cryptocurrency',
+            'nasdaq', 'dow jones', 's&p 500', 'wall street', 'bank',
+            'investment', 'investor', 'portfolio', 'dividend', 'bond', 'yield'
+        ]
     
     def fetch_financial_news(self, limit=10):
         """Obtiene noticias de RSS feeds financieros con mejor manejo de errores"""
@@ -1182,11 +1322,12 @@ class NewsAggregator:
     def __init__(self, enable_scraping=False):
         self.news_api = NewsAPI()
         self.alpha_vantage_api = AlphaVantageNewsAPI()
+        self.alternative_api = AlternativeNewsAPI()  # API alternativa como respaldo
         self.yahoo_news = YahooFinanceNews()
         self.rss_news = RSSFeedNews()
         self.perplexity_api = PerplexityAPI()
         self.logger = logging.getLogger(__name__)
-        
+
         # Solo habilitar scraping si se especifica explícitamente
         self.enable_scraping = enable_scraping
         if self.enable_scraping:

@@ -9,11 +9,31 @@ from deep_translator import GoogleTranslator
 import html
 
 class TelegramNotifier:
-    """Cliente para enviar notificaciones a Telegram"""
-    
-    def __init__(self, bot_token=None, chat_id=None):
+    """Cliente para enviar notificaciones a Telegram (soporta múltiples destinatarios)"""
+
+    def __init__(self, bot_token=None, chat_id=None, chat_ids=None):
         self.bot_token = bot_token or Config.TELEGRAM_BOT_TOKEN
-        self.chat_id = chat_id or Config.TELEGRAM_CHAT_ID
+
+        # Obtener valores reales de configuración (no objetos property)
+        config_chat_id = getattr(Config, 'TELEGRAM_CHAT_ID', None)
+        config_chat_ids = getattr(Config, 'TELEGRAM_CHAT_IDS', None)
+
+        # Usar parámetros proporcionados o configuración
+        if chat_id:
+            self.chat_id = str(chat_id)  # Asegurar que sea string
+        else:
+            self.chat_id = config_chat_id  # Ya debería ser string desde .env
+
+        # Para múltiples chat IDs
+        if chat_ids:
+            self.chat_ids = chat_ids if isinstance(chat_ids, list) else [str(chat_ids)]
+        elif config_chat_ids:
+            # Procesar TELEGRAM_CHAT_IDS desde configuración
+            self.chat_ids = [chat_id.strip() for chat_id in config_chat_ids.split(',') if chat_id.strip()]
+        else:
+            # Fallback a single chat ID como lista
+            self.chat_ids = [self.chat_id] if self.chat_id else []
+
         self.bot = Bot(token=self.bot_token) if self.bot_token else None
         self.logger = logging.getLogger(__name__)
         self.translator = GoogleTranslator()
@@ -22,8 +42,15 @@ class TelegramNotifier:
         """Valida la configuración del bot"""
         if not self.bot_token:
             raise ValueError("Bot token es requerido")
-        if not self.chat_id:
-            raise ValueError("Chat ID es requerido")
+
+        # Asegurar que chat_ids sea una lista válida de strings
+        if isinstance(self.chat_ids, list):
+            chat_ids = [str(chat_id).strip() for chat_id in self.chat_ids if str(chat_id).strip()]
+        else:
+            chat_ids = [str(self.chat_ids).strip()] if self.chat_ids else []
+
+        if not chat_ids or len(chat_ids) == 0:
+            raise ValueError("Al menos un Chat ID es requerido (TELEGRAM_CHAT_ID o TELEGRAM_CHAT_IDS)")
         return True
     
     def escape_html(self, text):
@@ -70,41 +97,73 @@ class TelegramNotifier:
         return title
     
     async def send_message(self, message, parse_mode=ParseMode.HTML):
-        """Envía un mensaje a Telegram con manejo de errores mejorado"""
+        """Envía un mensaje a múltiples chat IDs de Telegram con manejo de errores mejorado"""
         if not self.bot:
             self.logger.error("Bot no inicializado")
             return False
-        
+
+        # Si no hay chat_ids específicos, usar la lista de configuración
+        if self.chat_ids:
+            if isinstance(self.chat_ids, list):
+                target_chat_ids = [str(chat_id).strip() for chat_id in self.chat_ids if str(chat_id).strip()]
+            else:
+                target_chat_ids = [str(self.chat_ids).strip()] if self.chat_ids else []
+        else:
+            target_chat_ids = [str(self.chat_id).strip()] if self.chat_id else []
+
+        success_count = 0
+        total_count = len(target_chat_ids)
+
         try:
             # Limitar mensaje a 4096 caracteres
             if len(message) > 4096:
                 message = message[:4090] + "..."
-            
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode=parse_mode,
-                disable_web_page_preview=True
-            )
-            self.logger.info("Mensaje enviado exitosamente")
-            return True
-            
-        except TelegramError as e:
-            self.logger.error(f"Error enviando mensaje a Telegram: {e}")
-            # Intentar sin formato si falla con HTML
-            try:
-                await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message[:4000],
-                    parse_mode=None,
-                    disable_web_page_preview=True
-                )
+
+            # Enviar a todos los chat IDs
+            for chat_id in target_chat_ids:
+                try:
+                    # Asegurar que chat_id sea string válido
+                    chat_id_str = str(chat_id).strip()
+                    if not chat_id_str:
+                        continue
+
+                    await self.bot.send_message(
+                        chat_id=chat_id_str,
+                        text=message,
+                        parse_mode=parse_mode,
+                        disable_web_page_preview=True
+                    )
+                    success_count += 1
+                    self.logger.info(f"Mensaje enviado exitosamente a chat {chat_id}")
+
+                except TelegramError as e:
+                    self.logger.error(f"Error enviando mensaje a chat {chat_id}: {e}")
+                    # Intentar sin formato si falla con HTML
+                    try:
+                        chat_id_str = str(chat_id).strip()
+                        await self.bot.send_message(
+                            chat_id=chat_id_str,
+                            text=message[:4000],
+                            parse_mode=None,
+                            disable_web_page_preview=True
+                        )
+                        success_count += 1
+                        self.logger.info(f"Mensaje enviado sin formato a chat {chat_id}")
+                    except Exception as e2:
+                        self.logger.error(f"Error también sin formato para chat {chat_id}: {e2}")
+                except Exception as e:
+                    self.logger.error(f"Error inesperado enviando a chat {chat_id}: {e}")
+
+            # Retornar True si al menos un mensaje fue enviado exitosamente
+            if success_count > 0:
+                self.logger.info(f"Mensaje enviado exitosamente a {success_count}/{total_count} destinatarios")
                 return True
-            except Exception as e2:
-                self.logger.error(f"Error también sin formato: {e2}")
+            else:
+                self.logger.error("No se pudo enviar mensaje a ningún destinatario")
                 return False
+
         except Exception as e:
-            self.logger.error(f"Error inesperado: {e}")
+            self.logger.error(f"Error general enviando mensaje: {e}")
             return False
     
     def format_sentiment_analysis(self, analysis_result):
@@ -137,6 +196,9 @@ class TelegramNotifier:
 ├─ 🔴 Negativas: {summary.get('negative_percentage', 0):.1f}%
 └─ ⚪ Neutrales: {summary.get('neutral_percentage', 0):.1f}%
 
+🎯 <b>VOLATILIDAD DEL SENTIMIENTO</b>: {summary.get('sentiment_volatility', 0):.3f}
+📊 <b>CONFIANZA DEL ANÁLISIS</b>: Alto: {summary.get('confidence_distribution', {}).get('high', 0)}, Medio: {summary.get('confidence_distribution', {}).get('medium', 0)}, Bajo: {summary.get('confidence_distribution', {}).get('low', 0)}
+
 🗞️ <b>NOTICIAS DESTACADAS</b>"""
 
         # Agregar las noticias más relevantes (máximo 6)
@@ -155,7 +217,13 @@ class TelegramNotifier:
                 'negative': '🔴❤️📉',
                 'neutral': '⚪💛➖'
             }
-            article_emoji = sentiment_emojis.get(final_sentiment, '⚪💭')
+
+            # Usar sentimiento de Perplexity si está disponible, sino usar el análisis automático
+            display_sentiment = final_sentiment
+            if 'perplexity_sentiment' in article_analysis:
+                display_sentiment = article_analysis['perplexity_sentiment']
+
+            article_emoji = sentiment_emojis.get(display_sentiment, '⚪💭')
 
             # Traducir y truncar título
             original_title = article.get('title', 'Sin título')
@@ -192,6 +260,16 @@ class TelegramNotifier:
             if confidence > 0:
                 info_line += f" | 🎯 Confianza: {confidence:.2f}"
 
+            # Agregar indicador si el sentimiento viene de Perplexity
+            if 'perplexity_sentiment' in article_analysis:
+                sentiment_source = article_analysis['perplexity_sentiment']
+                sentiment_display = {
+                    'positive': '🟢',
+                    'negative': '🔴',
+                    'neutral': '⚪'
+                }.get(sentiment_source, '⚪')
+                info_line += f" | 📊 IA: {sentiment_display}"
+
             message += f"\n   {info_line}"
 
             # Mostrar tickers mencionados si están disponibles
@@ -203,6 +281,26 @@ class TelegramNotifier:
         sources_summary = self._get_sources_summary_compact(analyzed_articles)
         if sources_summary:
             message += f"\n\n📊 <b>FUENTES PRINCIPALES:</b> {sources_summary}"
+
+        # Agregar resumen de mercado si está disponible
+        if 'market_summary' in analysis_result and analysis_result['market_summary']:
+            market_data = analysis_result['market_summary']
+            market_sentiment = market_data.get('sentiment', 'neutral')
+            market_emoji = {
+                'positive': '📈🟢',
+                'negative': '📉🔴',
+                'neutral': '➖🟡'
+            }.get(market_sentiment, '❓')
+
+            message += f"\n\n🌍 <b>RESUMEN DEL MERCADO (IA)</b>"
+            message += f"\n{market_emoji} <b>Sentimiento del Día</b>: {market_sentiment.upper()}"
+
+            # Resumen del mercado (limitado para no hacer el mensaje muy largo)
+            market_summary = market_data.get('summary', '')
+            if len(market_summary) > 300:
+                market_summary = market_summary[:297] + "..."
+
+            message += f"\n💭 <i>{market_summary}</i>"
 
         # Footer mejorado
         analysis_time = datetime.fromisoformat(timestamp[:19]).strftime('%d/%m/%Y %H:%M')
@@ -302,33 +400,43 @@ class TelegramNotifier:
         return await self.send_message(message)
     
     async def test_connection(self):
-        """Prueba la conexión con Telegram"""
+        """Prueba la conexión con Telegram enviando a múltiples chat IDs"""
         try:
             self.validate_config()
-            
+
             # Intentar obtener información del bot
             bot_info = await self.bot.get_me()
             self.logger.info(f"Conectado como: {bot_info.first_name} (@{bot_info.username})")
-            
-            # Enviar mensaje de prueba simple
+
+            # Crear mensaje de prueba con información de múltiples destinatarios
+            if isinstance(self.chat_ids, list):
+                chat_ids_list = [str(chat_id).strip() for chat_id in self.chat_ids if str(chat_id).strip()]
+            else:
+                chat_ids_list = [str(self.chat_ids).strip()] if self.chat_ids else []
+            chat_count = len(chat_ids_list)
+            if chat_count == 1:
+                test_content = "🔄 Probando conexión con Telegram...\n✅ ¡Conexión exitosa!"
+            else:
+                test_content = f"🔄 Probando conexión con Telegram...\n✅ ¡Conexión exitosa!\n📱 Enviando a {chat_count} destinatarios"
+
             test_message = self.format_simple_notification(
                 "Prueba de Conexión",
-                "🔄 Probando conexión con Telegram...\n✅ ¡Conexión exitosa!"
+                test_content
             )
-            
+
             success = await self.send_message(test_message)
             return success
-            
+
         except Exception as e:
             self.logger.error(f"Error probando conexión: {e}")
             return False
 
 
 # Función helper para uso síncrono (MANTENER ESTA VERSIÓN)
-def send_telegram_notification(analysis_result, bot_token=None, chat_id=None):
+def send_telegram_notification(analysis_result, bot_token=None, chat_id=None, chat_ids=None):
     """Función helper para enviar notificaciones de manera síncrona"""
     async def _send():
-        notifier = TelegramNotifier(bot_token, chat_id)
+        notifier = TelegramNotifier(bot_token, chat_id, chat_ids)
         return await notifier.send_sentiment_analysis(analysis_result)
     
     try:

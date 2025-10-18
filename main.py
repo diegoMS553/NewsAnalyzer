@@ -56,7 +56,12 @@ class FinancialNewsAnalyzer:
             enable_scraping = Config.ENABLE_WEB_SCRAPING and not Config.RENDER_DEPLOYMENT
             self.news_aggregator = NewsAggregator(enable_scraping=enable_scraping)
             self.sentiment_analyzer = FinancialSentimentAnalyzer()
-            self.telegram_notifier = TelegramNotifier()
+            # Inicializar TelegramNotifier con configuración explícita
+            self.telegram_notifier = TelegramNotifier(
+                bot_token=Config.TELEGRAM_BOT_TOKEN,
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+            )
             
             self.logger.info("Aplicación inicializada correctamente")
         except Exception as e:
@@ -78,9 +83,9 @@ class FinancialNewsAnalyzer:
             
             self.logger.info(f"✅ Obtenidas {len(articles)} noticias")
             
-            # 2. Analizar sentimientos
+            # 2. Analizar sentimientos con resumen de mercado
             self.logger.info("🔍 Analizando sentimientos...")
-            analysis_result = self.sentiment_analyzer.analyze_multiple_articles(articles)
+            analysis_result = self.sentiment_analyzer.analyze_with_market_summary(articles)
             
             # 3. Enviar resultados por Telegram
             self.logger.info("📱 Enviando resultados por Telegram...")
@@ -103,11 +108,17 @@ class FinancialNewsAnalyzer:
         """Envía notificación cuando no hay noticias disponibles"""
         try:
             async def send_notification():
-                await self.telegram_notifier.send_error_notification(
+                # Crear nueva instancia para evitar problemas de inicialización
+                notifier = TelegramNotifier(
+                    bot_token=Config.TELEGRAM_BOT_TOKEN,
+                    chat_id=Config.TELEGRAM_CHAT_ID,
+                    chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+                )
+                await notifier.send_error_notification(
                     "No se pudieron obtener noticias financieras en este momento. "
                     "Verifica la conectividad a internet y las APIs."
                 )
-            
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(send_notification())
@@ -121,8 +132,14 @@ class FinancialNewsAnalyzer:
         """Envía notificación de error por Telegram"""
         try:
             async def send_notification():
-                await self.telegram_notifier.send_error_notification(error_message)
-            
+                # Crear nueva instancia para evitar problemas de inicialización
+                notifier = TelegramNotifier(
+                    bot_token=Config.TELEGRAM_BOT_TOKEN,
+                    chat_id=Config.TELEGRAM_CHAT_ID,
+                    chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+                )
+                await notifier.send_error_notification(error_message)
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(send_notification())
@@ -136,7 +153,13 @@ class FinancialNewsAnalyzer:
         
         # 1. Probar conexión a Telegram
         self.logger.info("Probando conexión a Telegram...")
-        telegram_ok = await self.telegram_notifier.test_connection()
+        # Crear nueva instancia para evitar problemas de inicialización
+        test_notifier = TelegramNotifier(
+            bot_token=Config.TELEGRAM_BOT_TOKEN,
+            chat_id=Config.TELEGRAM_CHAT_ID,
+            chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+        )
+        telegram_ok = await test_notifier.test_connection()
         
         if not telegram_ok:
             self.logger.error("❌ Fallo conexión a Telegram")
@@ -155,11 +178,16 @@ class FinancialNewsAnalyzer:
         # 3. Probar análisis de sentimientos
         if test_articles:
             self.logger.info("Probando análisis de sentimientos...")
-            test_analysis = self.sentiment_analyzer.analyze_multiple_articles(test_articles[:2])
+            test_analysis = self.sentiment_analyzer.analyze_with_market_summary(test_articles[:2])
             sentiment_ok = 'error' not in test_analysis
-            
+
             if sentiment_ok:
                 self.logger.info("✅ Análisis de sentimientos funcionando")
+                # Verificar si también incluye resumen de mercado
+                if test_analysis.get('market_summary'):
+                    self.logger.info("✅ Resumen de mercado disponible")
+                else:
+                    self.logger.info("⚠️ Resumen de mercado no disponible (API key de Perplexity requerida)")
             else:
                 self.logger.error("❌ Error en análisis de sentimientos")
         else:
@@ -169,7 +197,13 @@ class FinancialNewsAnalyzer:
         
         if overall_status:
             self.logger.info("✅ Todas las pruebas del sistema pasaron")
-            await self.telegram_notifier.send_startup_notification()
+            # Crear nueva instancia para evitar problemas de inicialización
+            startup_notifier = TelegramNotifier(
+                bot_token=Config.TELEGRAM_BOT_TOKEN,
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+            )
+            await startup_notifier.send_startup_notification()
         else:
             self.logger.error("❌ Algunas pruebas del sistema fallaron")
         
@@ -198,7 +232,13 @@ class FinancialNewsAnalyzer:
                 
         except KeyboardInterrupt:
             self.logger.info("🛑 Deteniendo aplicación...")
-            asyncio.run(self.telegram_notifier.send_error_notification(
+            # Crear nueva instancia para evitar problemas de inicialización
+            stop_notifier = TelegramNotifier(
+                bot_token=Config.TELEGRAM_BOT_TOKEN,
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                chat_ids=Config.TELEGRAM_CHAT_ID_LIST
+            )
+            asyncio.run(stop_notifier.send_error_notification(
                 "Sistema de análisis de noticias financieras detenido manualmente."
             ))
 
